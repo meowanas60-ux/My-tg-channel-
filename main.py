@@ -5,7 +5,7 @@ import logging
 import io
 from PIL import Image, ImageDraw, ImageFont
 from aiohttp import web
-from telethon import TelegramClient, events, Button
+from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.errors import FloodWaitError
 
@@ -65,7 +65,7 @@ else:
 
 
 # ============================================================
-# 🌐 WEB SERVER (Render alive)
+# 🌐 WEB SERVER
 # ============================================================
 async def start_web_server():
     async def handle(request):
@@ -243,9 +243,9 @@ def mark_sent(filename: str, file_id=None):
 
 
 # ============================================================
-# 🤖 CAPTION BUILDER
+# 🤖 CAPTION BUILDER — Download link caption-এর ভেতরে
 # ============================================================
-def build_caption(filename: str, desc: str) -> str:
+def build_caption(filename: str, desc: str, storage_msg_id: int = None) -> str:
     info = parse_apk_name(filename)
     lines = [f"📱 **{info['full_display']}**"]
     if info['version']:
@@ -253,19 +253,21 @@ def build_caption(filename: str, desc: str) -> str:
     lines.append(f"📦 **File:** `{filename}`")
     if desc:
         lines.append(f"\n📝 {desc}")
+
+    # ✅ Download link caption-এর ভেতরে — সবসময় কাজ করে
+    if storage_msg_id:
+        lines.append(
+            f"\n⬇️ **[Download APK](https://t.me/{DOWNLOAD_BOT_USERNAME}?start=dl_{storage_msg_id})**"
+        )
+
     lines.append(MY_FOOTER)
     return "\n".join(lines)
 
 
 # ============================================================
-# 💾 STORAGE CHANNEL — APK সেভ করো, message_id ফেরত দাও
+# 💾 STORAGE CHANNEL — APK save করো
 # ============================================================
 async def save_to_storage(apk_msg) -> int | None:
-    """
-    APK message টা storage channel-এ forward করে
-    সেই message-এর ID return করে।
-    Bot পরে এই ID দিয়ে user-কে file পাঠাবে।
-    """
     try:
         saved = await client.forward_messages(STORAGE_CHANNEL_ID, apk_msg)
         msg_id = saved.id if hasattr(saved, 'id') else saved[0].id
@@ -279,28 +281,33 @@ async def save_to_storage(apk_msg) -> int | None:
 # ============================================================
 # 📤 SEND TO DESTINATION CHANNEL
 # ============================================================
-async def send_to_channel(dest, caption, photo, storage_msg_id: int, filename: str):
-    """
-    Channel-এ শুধু Photo + Caption + Download Button পাঠায়।
-    APK file channel-এ যায় না।
-    Button-এ storage_msg_id থাকে, bot সেটা দিয়ে user-কে file দেবে।
-    """
-    bot_link = f"https://t.me/{DOWNLOAD_BOT_USERNAME}?start=dl_{storage_msg_id}"
-    buttons = [Button.url("⬇️ Download APK", bot_link)]
-
+async def send_to_channel(dest, caption, photo):
     try:
         if photo and isinstance(photo, bytes):
             buf = io.BytesIO(photo)
             buf.name = "logo.png"
-            await client.send_file(dest, file=buf, caption=caption,
-                                   buttons=buttons, parse_mode='md')
+            await client.send_file(
+                dest,
+                file=buf,
+                caption=caption,
+                parse_mode='md',
+                link_preview=False
+            )
         elif photo:
-            await client.send_file(dest, file=photo, caption=caption,
-                                   buttons=buttons, parse_mode='md')
+            await client.send_file(
+                dest,
+                file=photo,
+                caption=caption,
+                parse_mode='md',
+                link_preview=False
+            )
         else:
-            await client.send_message(dest, message=caption,
-                                      buttons=buttons, parse_mode='md',
-                                      link_preview=False)
+            await client.send_message(
+                dest,
+                message=caption,
+                parse_mode='md',
+                link_preview=False
+            )
         return True
 
     except FloodWaitError as e:
@@ -368,9 +375,6 @@ async def handler(event):
         if unique_id in SENT_CACHE:
             return
 
-        clean_desc = clean_text_content(text)
-        final_caption = build_caption(filename, clean_desc)
-
         # Photo / Logo
         photo = await get_photo(event)
         if photo is None:
@@ -386,11 +390,10 @@ async def handler(event):
         # Saved Messages থেকে direct পাঠানো
         if event.chat_id == ME_ID:
             storage_msg_id = await save_to_storage(event.message)
-            if not storage_msg_id:
-                print("❌ Could not save to storage, aborting.")
-                return
+            clean_desc = clean_text_content(text)
+            final_caption = build_caption(filename, clean_desc, storage_msg_id)
             for dest in DEST_CHANNELS:
-                ok = await send_to_channel(dest, final_caption, photo, storage_msg_id, filename)
+                ok = await send_to_channel(dest, final_caption, photo)
                 if ok:
                     STATS["total_sent"] += 1
                 await asyncio.sleep(5)
@@ -398,12 +401,13 @@ async def handler(event):
             return
 
         # Queue-এ add
+        clean_desc = clean_text_content(text)
         APP_QUEUE.append({
-            "msg":      event.message,
-            "caption":  final_caption,
-            "photo":    photo,
-            "filename": filename,
-            "file_id":  file_id,
+            "msg":       event.message,
+            "clean_desc": clean_desc,
+            "photo":     photo,
+            "filename":  filename,
+            "file_id":   file_id,
         })
         SENT_CACHE.append(unique_id)
         if len(SENT_CACHE) > 200:
@@ -423,24 +427,22 @@ async def worker():
         if APP_QUEUE:
             item = APP_QUEUE.pop(0)
             try:
-                # Storage channel-এ save করো
+                # Storage-এ save করো → msg_id পাও → caption বানাও
                 storage_msg_id = await save_to_storage(item["msg"])
-                if not storage_msg_id:
-                    print(f"❌ Storage failed for {item['filename']}, skipping.")
-                    await asyncio.sleep(10)
-                    continue
+                final_caption = build_caption(
+                    item["filename"],
+                    item["clean_desc"],
+                    storage_msg_id
+                )
 
                 for dest in DEST_CHANNELS:
-                    ok = await send_to_channel(
-                        dest, item["caption"], item["photo"],
-                        storage_msg_id, item["filename"]
-                    )
+                    ok = await send_to_channel(dest, final_caption, item["photo"])
                     if ok:
                         STATS["total_sent"] += 1
                     await asyncio.sleep(5)
 
                 mark_sent(item["filename"], item.get("file_id"))
-                await asyncio.sleep(600)  # 10 min gap
+                await asyncio.sleep(1800)  # 30 min gap
 
             except Exception as e:
                 print(f"Worker error: {e}")
