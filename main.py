@@ -53,7 +53,7 @@ MY_FOOTER = (
 )
 
 GAMBLING_KEYWORDS = ["1xbet","aviator","casino","gambling","melbet","baji","jeet","cricket365","betting"]
-BAD_WORDS = ["@Getmodpcs","Join now","t.me/","Subscribe","Contact admin","Download","Install","Follow on"]
+BAD_WORDS = ["@Getmodpcs","Join now","t.me/GetsMods_bot","Subscribe","Contact admin","Download","Install","Follow on"]
 
 logging.basicConfig(level=logging.INFO)
 
