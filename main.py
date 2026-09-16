@@ -1,10 +1,10 @@
-
 import os
 import re
 import io
 import asyncio
 import logging
 from html import escape as html_escape
+from urllib.parse import quote
 
 from PIL import Image, ImageDraw, ImageFont
 from aiohttp import web
@@ -41,6 +41,16 @@ DOWNLOAD_BOT_USERNAME = re.sub(
     DOWNLOAD_BOT_USERNAME,
     flags=re.IGNORECASE
 ).strip("/ ")
+
+PUBLIC_BASE_URL = os.environ.get(
+    "PUBLIC_BASE_URL",
+    "https://my-tg-channel.onrender.com"
+).rstrip("/")
+
+ADSTERRA_SMARTLINK = (
+    "https://www.profitableratecpmnetwork.com/"
+    "kh4t4gsu0?key=827386a9e5fed85caafe0ab18cc6f8d0"
+)
 
 STORAGE_CHANNEL_ID = int(
     os.environ.get("STORAGE_CHANNEL_ID", "-1003564232245")
@@ -123,27 +133,152 @@ client = TelegramClient(
 )
 
 # ============================================================
-# WEB SERVER FOR RENDER
+# WEB SERVER + APK LANDING PAGE
 # ============================================================
 
+def landing_page_html(storage_msg_id: int, app_name: str = "APK Application", version: str = "Latest", filename: str = "Android Application") -> str:
+    safe_app_name = html_escape(app_name or "APK Application")
+    safe_version = html_escape(version or "Latest")
+    safe_filename = html_escape(filename or "Android Application")
+    telegram_link = f"https://t.me/{DOWNLOAD_BOT_USERNAME}?start=dl_{storage_msg_id}"
+    visited_key = f"anas_ad_visited_{storage_msg_id}"
+
+    return f'''<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{safe_app_name} | Anas APK System</title>
+<meta name="description" content="Download {safe_app_name} from Anas APK System.">
+<style>
+*{{box-sizing:border-box}}
+html{{min-height:100%}}
+body{{min-height:100vh;margin:0;padding:24px 12px;font-family:Arial,Helvetica,sans-serif;color:#fff;background:linear-gradient(180deg,#70bd79 0%,#55a99a 38%,#347fb1 72%,#2364a4 100%)}}
+.page{{width:100%;max-width:480px;margin:0 auto}}
+.brand{{text-align:center;margin:8px 0 24px}}
+.brand-symbol{{width:94px;height:94px;margin:0 auto 18px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.16);border:2px solid rgba(255,255,255,.55);box-shadow:0 10px 30px rgba(0,0,0,.12);font-size:31px;font-weight:800;letter-spacing:-2px}}
+.brand h1{{margin:0;font-size:25px;font-weight:800}}
+.brand p{{margin:8px 0 0;color:rgba(255,255,255,.82);font-size:13px}}
+.card{{padding:22px;border-radius:24px;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.28);box-shadow:0 18px 45px rgba(0,0,0,.13);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}}
+.app-icon{{width:78px;height:78px;margin:0 auto 14px;border-radius:20px;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.92);color:#277bb0;font-size:26px;font-weight:800;box-shadow:0 8px 20px rgba(0,0,0,.12)}}
+.app-title{{text-align:center;margin-bottom:18px}}
+.app-title h2{{margin:0;font-size:23px;font-weight:800;word-break:break-word}}
+.app-title span{{display:inline-block;margin-top:8px;padding:5px 11px;border-radius:30px;background:rgba(255,255,255,.18);color:rgba(255,255,255,.9);font-size:12px}}
+.details{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin:18px 0}}
+.detail{{padding:12px 8px;border-radius:13px;text-align:center;background:rgba(255,255,255,.13);border:1px solid rgba(255,255,255,.16)}}
+.detail small{{display:block;margin-bottom:5px;color:rgba(255,255,255,.7);font-size:10px;text-transform:uppercase}}
+.detail strong{{display:block;color:#fff;font-size:13px;word-break:break-word}}
+.ad-box{{width:100%;margin:22px 0;padding:7px 0;text-align:center;overflow:hidden}}
+.ad-label{{margin-bottom:7px;color:rgba(255,255,255,.65);font-size:10px;letter-spacing:1px;text-transform:uppercase}}
+.section-title{{margin:20px 0 8px;font-size:17px}}
+.description{{margin:0;color:rgba(255,255,255,.8);font-size:13px;line-height:1.7}}
+.file-name{{margin-top:15px;padding:11px;border-radius:10px;background:rgba(0,0,0,.12);color:rgba(255,255,255,.78);font-size:11px;line-height:1.5;word-break:break-word}}
+.download-btn{{display:block;width:100%;margin-top:22px;padding:15px 18px;border:0;border-radius:13px;background:#fff;color:#2775aa;font-size:16px;font-weight:800;text-align:center;text-decoration:none;cursor:pointer;box-shadow:0 8px 22px rgba(0,0,0,.15);transition:transform .2s,background .2s}}
+.download-btn:hover{{background:#eaf7ff;transform:translateY(-2px)}}
+.download-btn:active{{transform:translateY(0)}}
+.note{{margin:12px 0 0;color:rgba(255,255,255,.72);font-size:11px;line-height:1.6;text-align:center}}
+.footer{{margin:22px 0 5px;color:rgba(255,255,255,.68);font-size:11px;text-align:center}}
+@media(max-width:360px){{body{{padding:18px 9px}}.card{{padding:17px}}.brand h1{{font-size:22px}}}}
+</style>
+</head>
+<body>
+<main class="page">
+<header class="brand"><div class="brand-symbol">GM</div><h1>Anas APK System</h1><p>Android Applications &amp; Downloads</p></header>
+<section class="card">
+<div class="app-icon">APK</div>
+<div class="app-title"><h2>{safe_app_name}</h2><span>{safe_version}</span></div>
+<div class="details">
+<div class="detail"><small>Version</small><strong>{safe_version}</strong></div>
+<div class="detail"><small>Platform</small><strong>Android</strong></div>
+<div class="detail"><small>File Type</small><strong>APK</strong></div>
+<div class="detail"><small>Source</small><strong>Telegram</strong></div>
+</div>
+
+<!-- Adsterra Native Banner -->
+<div class="ad-box"><div class="ad-label">Advertisement</div>
+<script async="async" data-cfasync="false" src="https://pl31376477.profitableratecpmnetwork.com/57efad1efb9e1a90ad6d5626c971d9e6/invoke.js"></script>
+<div id="container-57efad1efb9e1a90ad6d5626c971d9e6"></div>
+</div>
+
+<h3 class="section-title">About this application</h3>
+<p class="description">Review the application information below. Click the continue button to proceed to the download process.</p>
+<div class="file-name"><strong>File:</strong> {safe_filename}</div>
+
+<!-- First click: Smartlink. After Back: Telegram bot. -->
+<a id="continueDownload" class="download-btn" href="{ADSTERRA_SMARTLINK}" target="_self" rel="nofollow sponsored noopener noreferrer">Continue to Download</a>
+<p id="downloadNote" class="note">Tap once to continue. Return to this page and tap again to open the Telegram download bot.</p>
+</section>
+<div class="footer">© 2026 Anas APK System</div>
+</main>
+
+<!-- Adsterra Social Bar -->
+<script src="https://pl31376479.profitableratecpmnetwork.com/47/9e/72/479e72023d7d0e8985828d9969ff82a3.js"></script>
+<script>
+(function() {{
+  const button = document.getElementById('continueDownload');
+  const note = document.getElementById('downloadNote');
+  const smartLink = {ADSTERRA_SMARTLINK!r};
+  const telegramLink = {telegram_link!r};
+  const visitedKey = {visited_key!r};
+
+  function setTelegramMode() {{
+    button.href = telegramLink;
+    button.target = '_self';
+    button.textContent = 'Get APK from Telegram';
+    note.textContent = 'Tap the button again to open the Telegram bot and receive the file.';
+  }}
+
+  if (sessionStorage.getItem(visitedKey) === 'true') {{
+    setTelegramMode();
+  }}
+
+  button.addEventListener('click', function() {{
+    if (sessionStorage.getItem(visitedKey) !== 'true') {{
+      sessionStorage.setItem(visitedKey, 'true');
+      button.href = smartLink;
+      button.target = '_self';
+      return;
+    }}
+    button.href = telegramLink;
+    button.target = '_self';
+  }});
+}})();
+</script>
+</body>
+</html>'''
+
+
 async def start_web_server():
-    async def handle(request):
-        return web.Response(
-            text="Anas APK System is alive ✅",
-            content_type="text/plain"
-        )
+    async def health_handler(request):
+        return web.Response(text="Anas APK System is alive ✅", content_type="text/plain")
+
+    async def landing_handler(request):
+        try:
+            storage_msg_id = int(request.match_info["storage_msg_id"])
+            app_name = request.query.get("name", "APK Application")
+            version = request.query.get("version", "Latest")
+            filename = request.query.get("file", "Android Application")
+            return web.Response(
+                text=landing_page_html(storage_msg_id, app_name, version, filename),
+                content_type="text/html",
+                charset="utf-8"
+            )
+        except (TypeError, ValueError):
+            return web.Response(text="Invalid download link", status=400, content_type="text/plain")
+        except Exception:
+            logger.exception("Landing page failed")
+            return web.Response(text="Landing page error", status=500, content_type="text/plain")
 
     app = web.Application()
-    app.router.add_get("/", handle)
-    app.router.add_get("/health", handle)
+    app.router.add_get("/", health_handler)
+    app.router.add_get("/health", health_handler)
+    app.router.add_get("/download/{storage_msg_id}", landing_handler)
 
     runner = web.AppRunner(app)
     await runner.setup()
-
     port = int(os.environ.get("PORT", "8080"))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-
     logger.info("🌐 Web server started on port %s", port)
 
 # ============================================================
@@ -466,8 +601,10 @@ def build_caption(
     # Never publish a broken or empty download link.
     if storage_msg_id and storage_msg_id > 0:
         download_url = (
-            f"https://t.me/{DOWNLOAD_BOT_USERNAME}"
-            f"?start=dl_{storage_msg_id}"
+            f"{PUBLIC_BASE_URL}/download/{storage_msg_id}"
+            f"?name={quote(info['clean_name'])}"
+            f"&version={quote(info['version'] or 'Latest')}"
+            f"&file={quote(filename)}"
         )
 
         lines.append(
