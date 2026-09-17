@@ -6,7 +6,7 @@ import logging
 from html import escape as html_escape
 from urllib.parse import quote
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
 from aiohttp import web
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
@@ -362,145 +362,244 @@ def parse_apk_name(filename: str) -> dict:
     }
 
 # ============================================================
-# AUTO LOGO GENERATOR
+# REAL APP LOGO / BRANDED POSTER
 # ============================================================
 
-LOGO_BG_COLORS = [
-    ("#1a1a2e", "#e94560"),
-    ("#0f3460", "#16213e"),
-    ("#1b1b2f", "#f5a623"),
-    ("#0d0d0d", "#00d4aa"),
-    ("#2d132c", "#c72c41"),
-    ("#1a1a2e", "#4ecca3"),
-]
+# Known official domains. The bot tries these first when looking for
+# an online logo. Add more apps/domains here whenever needed.
+APP_DOMAINS = {
+    "youtube": ["youtube.com"],
+    "youtube lite": ["youtube.com"],
+    "youtube vanced": ["youtube.com"],
+    "deepseek": ["deepseek.com"],
+    "spotify": ["spotify.com"],
+    "spotiduck": ["spotify.com"],
+    "tiktok": ["tiktok.com"],
+    "facebook": ["facebook.com"],
+    "instagram": ["instagram.com"],
+    "telegram": ["telegram.org"],
+    "whatsapp": ["whatsapp.com"],
+    "capcut": ["capcut.com"],
+    "snapchat": ["snapchat.com"],
+    "netflix": ["netflix.com"],
+    "chatgpt": ["openai.com"],
+    "openai": ["openai.com"],
+    "gemini": ["gemini.google.com", "google.com"],
+    "google": ["google.com"],
+    "chrome": ["google.com"],
+    "discord": ["discord.com"],
+    "reddit": ["reddit.com"],
+    "pinterest": ["pinterest.com"],
+    "x": ["x.com"],
+    "twitter": ["x.com"],
+    "linkedin": ["linkedin.com"],
+    "canva": ["canva.com"],
+    "picsart": ["picsart.com"],
+    "shazam": ["shazam.com"],
+}
 
-def generate_apk_logo(app_name: str) -> bytes:
-    import random
 
-    W, H = 512, 512
-    bg1, accent = random.choice(LOGO_BG_COLORS)
+def _normalise_app_name(name: str) -> str:
+    name = (name or "").lower()
+    name = re.sub(r"[^a-z0-9]+", " ", name)
+    return re.sub(r"\s+", " ", name).strip()
 
-    img = Image.new("RGB", (W, H), bg1)
-    draw = ImageDraw.Draw(img)
 
-    r1 = int(bg1[1:3], 16)
-    g1 = int(bg1[3:5], 16)
-    b1 = int(bg1[5:7], 16)
+def logo_domains_for_app(app_name: str):
+    normalized = _normalise_app_name(app_name)
+    domains = []
 
-    r2 = max(r1 - 30, 0)
-    g2 = max(g1 - 30, 0)
-    b2 = max(b1 - 30, 0)
+    for key, values in APP_DOMAINS.items():
+        if key in normalized or normalized in key:
+            domains.extend(values)
 
-    for y in range(H):
-        ratio = y / H
-        draw.line(
-            [(0, y), (W, y)],
-            fill=(
-                int(r1 + (r2 - r1) * ratio),
-                int(g1 + (g2 - g1) * ratio),
-                int(b1 + (b2 - b1) * ratio),
-            )
-        )
+    # Reasonable candidates for lesser-known apps.
+    compact = normalized.replace(" ", "")
+    if compact:
+        domains.extend([
+            f"{compact}.com",
+            f"{compact}.app",
+            f"{compact}.net",
+        ])
 
-    ar = int(accent[1:3], 16)
-    ag = int(accent[3:5], 16)
-    ab = int(accent[5:7], 16)
+    # Keep order but remove duplicates.
+    return list(dict.fromkeys(domains))
 
-    for i in range(3):
-        overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        d2 = ImageDraw.Draw(overlay)
 
-        radius = 180 + i * 30
-        cx, cy = W // 2, H // 2 - 30
+async def fetch_online_app_logo(app_name: str):
+    """Fetch an online logo from Google's favicon service.
 
-        d2.ellipse(
-            [
-                cx - radius,
-                cy - radius,
-                cx + radius,
-                cy + radius,
-            ],
-            fill=(ar, ag, ab, 30 - i * 10)
-        )
+    Returns PNG/JPEG bytes only when a valid image is received.
+    No generated initials are used as a fallback.
+    """
+    import aiohttp
 
-        img = Image.alpha_composite(
-            img.convert("RGBA"),
-            overlay
-        ).convert("RGB")
+    domains = logo_domains_for_app(app_name)
+    if not domains:
+        return None
 
-    draw = ImageDraw.Draw(img)
-
-    words = app_name.split()
-    initials = "".join(
-        word[0].upper() for word in words[:2]
-    ) or app_name[:2].upper()
+    timeout = aiohttp.ClientTimeout(total=12)
+    headers = {
+        "User-Agent": "Mozilla/5.0 AnasAPKSystem/1.0"
+    }
 
     try:
-        font_big = ImageFont.truetype(
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            160
-        )
-        font_sm = ImageFont.truetype(
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            36
-        )
-        font_tag = ImageFont.truetype(
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            28
-        )
+        async with aiohttp.ClientSession(
+            timeout=timeout,
+            headers=headers
+        ) as session:
+            for domain in domains:
+                url = (
+                    "https://www.google.com/s2/favicons"
+                    f"?domain={quote(domain)}&sz=256"
+                )
+
+                try:
+                    async with session.get(url, allow_redirects=True) as resp:
+                        if resp.status != 200:
+                            continue
+
+                        data = await resp.read()
+                        if len(data) < 100:
+                            continue
+
+                        try:
+                            image = Image.open(io.BytesIO(data))
+                            image.load()
+                            if image.width < 16 or image.height < 16:
+                                continue
+                            logger.info(
+                                "🌐 Online logo found | app=%s | domain=%s",
+                                app_name,
+                                domain
+                            )
+                            return data
+                        except Exception:
+                            continue
+                except Exception:
+                    continue
     except Exception:
-        font_big = ImageFont.load_default()
-        font_sm = font_big
-        font_tag = font_big
+        logger.exception("Online logo lookup failed | app=%s", app_name)
 
-    bbox = draw.textbbox((0, 0), initials, font=font_big)
-    tw = bbox[2] - bbox[0]
-    th = bbox[3] - bbox[1]
+    logger.warning("⚠️ No online logo found | app=%s", app_name)
+    return None
 
-    tx = (W - tw) // 2
-    ty = (H - th) // 2 - 50
 
-    draw.text(
-        (tx + 4, ty + 4),
-        initials,
-        font=font_big,
-        fill=(0, 0, 0, 120)
+def _font(path, size):
+    try:
+        return ImageFont.truetype(path, size)
+    except Exception:
+        return ImageFont.load_default()
+
+
+def create_branded_poster(app_name: str, logo_bytes: bytes) -> bytes:
+    """Create a purple/blue branded poster using the real app logo."""
+    W, H = 1080, 1080
+
+    img = Image.new("RGB", (W, H), "#321078")
+    px = img.load()
+
+    # Purple-to-blue gradient matching the requested reference style.
+    top = (116, 11, 191)
+    bottom = (19, 35, 151)
+    for y in range(H):
+        t = y / max(H - 1, 1)
+        r = int(top[0] * (1 - t) + bottom[0] * t)
+        g = int(top[1] * (1 - t) + bottom[1] * t)
+        b = int(top[2] * (1 - t) + bottom[2] * t)
+        ImageDraw.Draw(img).line((0, y, W, y), fill=(r, g, b))
+
+    overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    od = ImageDraw.Draw(overlay)
+
+    # Abstract leaf-like diagonal shapes.
+    leaf_color = (17, 7, 91, 145)
+    for x, y, w, h in [
+        (-40, 20, 220, 620), (110, -30, 170, 520),
+        (300, -70, 150, 430), (820, -40, 180, 560),
+        (950, 120, 190, 530), (-80, 690, 260, 500),
+        (820, 730, 250, 500),
+    ]:
+        od.polygon(
+            [(x, y), (x + w, y + 40), (x + w // 2, y + h),
+             (x + w // 3, y + h // 3)],
+            fill=leaf_color
+        )
+
+    # Soft glow behind the icon.
+    od.ellipse((250, 170, 830, 750), fill=(210, 30, 255, 45))
+    overlay = overlay.filter(ImageFilter.GaussianBlur(18))
+    img = Image.alpha_composite(img.convert("RGBA"), overlay)
+
+    draw = ImageDraw.Draw(img)
+    white = (255, 255, 255, 255)
+    muted = (232, 218, 255, 255)
+
+    font_bold = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+    font_regular = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+
+    f_brand = _font(font_bold, 54)
+    f_sub = _font(font_regular, 28)
+    f_app = _font(font_bold, 64)
+    f_small = _font(font_regular, 27)
+    f_tag = _font(font_bold, 30)
+
+    def centered(text, y, font, fill=white):
+        box = draw.textbbox((0, 0), text, font=font)
+        x = (W - (box[2] - box[0])) // 2
+        draw.text((x, y), text, font=font, fill=fill)
+
+    centered("Anas APK System", 55, f_brand)
+    centered("Android Applications & Downloads", 125, f_sub, muted)
+
+    # Real logo in a clean rounded white frame.
+    try:
+        icon = Image.open(io.BytesIO(logo_bytes)).convert("RGBA")
+        icon.thumbnail((420, 420), Image.Resampling.LANCZOS)
+
+        frame = Image.new("RGBA", (500, 500), (255, 255, 255, 255))
+        mask = Image.new("L", (500, 500), 0)
+        md = ImageDraw.Draw(mask)
+        md.rounded_rectangle((0, 0, 499, 499), radius=72, fill=255)
+        frame.putalpha(mask)
+
+        icon_canvas = Image.new("RGBA", (500, 500), (255, 255, 255, 0))
+        ix = (500 - icon.width) // 2
+        iy = (500 - icon.height) // 2
+        icon_canvas.alpha_composite(icon, (ix, iy))
+        icon_canvas.putalpha(mask)
+
+        shadow = Image.new("RGBA", (560, 560), (0, 0, 0, 0))
+        sd = ImageDraw.Draw(shadow)
+        sd.rounded_rectangle((30, 30, 530, 530), radius=80, fill=(0, 0, 0, 130))
+        shadow = shadow.filter(ImageFilter.GaussianBlur(25))
+        img.alpha_composite(shadow, (260, 205))
+        img.alpha_composite(frame, (290, 205))
+        img.alpha_composite(icon_canvas, (290, 205))
+    except Exception as exc:
+        raise RuntimeError(f"Invalid online logo image: {exc}")
+
+    clean_name = app_name.strip() or "APK Application"
+    if len(clean_name) > 25:
+        clean_name = clean_name[:25].rstrip() + "…"
+
+    centered(clean_name, 755, f_app)
+    centered("Official app logo • Android APK", 835, f_small, muted)
+
+    # Bottom brand strip.
+    strip_y = 930
+    draw.rounded_rectangle(
+        (70, strip_y, W - 70, 1000),
+        radius=28,
+        fill=(8, 5, 65, 180),
+        outline=(180, 80, 255, 220),
+        width=3
     )
-    draw.text(
-        (tx, ty),
-        initials,
-        font=font_big,
-        fill="white"
-    )
+    centered("★ Anas APK ★", 950, f_tag)
 
-    app_label = app_name[:18]
-    bbox2 = draw.textbbox((0, 0), app_label, font=font_sm)
-
-    draw.text(
-        ((W - (bbox2[2] - bbox2[0])) // 2, ty + th + 20),
-        app_label,
-        font=font_sm,
-        fill=(ar, ag, ab)
-    )
-
-    tag = "★ Anas APK ★"
-    bbox3 = draw.textbbox((0, 0), tag, font=font_tag)
-
-    draw.text(
-        ((W - (bbox3[2] - bbox3[0])) // 2, H - 60),
-        tag,
-        font=font_tag,
-        fill="white"
-    )
-
-    draw.rectangle(
-        [0, H - 8, W, H],
-        fill=(ar, ag, ab)
-    )
-
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    return buf.getvalue()
+    out = io.BytesIO()
+    img.convert("RGB").save(out, format="PNG", optimize=True)
+    return out.getvalue()
 
 # ============================================================
 # PHOTO FINDER
@@ -813,20 +912,38 @@ async def handler(event):
 
         photo = await get_photo(event)
 
+        # If the source message has no photo, find the real app logo online.
+        # If no valid logo is found, skip this APK instead of generating fake
+        # initials such as YT, D, or SD.
         if photo is None:
             info = parse_apk_name(filename)
+            online_logo = await fetch_online_app_logo(info["clean_name"])
+
+            if online_logo is None:
+                logger.warning(
+                    "⏭️ APK skipped: real logo not found | app=%s | filename=%s",
+                    info["clean_name"],
+                    filename
+                )
+                return
 
             try:
-                photo = generate_apk_logo(info["clean_name"])
+                photo = create_branded_poster(
+                    info["clean_name"],
+                    online_logo
+                )
                 STATS["logo_generated"] += 1
                 logger.info(
-                    "🎨 Logo generated: %s",
+                    "🖼️ Real online logo poster created: %s",
                     info["clean_name"]
                 )
-
             except Exception:
-                logger.exception("Logo generation failed")
-                photo = None
+                logger.exception("Real logo poster creation failed")
+                return
+        elif not isinstance(photo, bytes):
+            # A source photo may be unrelated to the APK. Keep it only when
+            # the user supplied a photo; otherwise online logo is preferred.
+            pass
 
         clean_desc = clean_text_content(text)
 
