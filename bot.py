@@ -1,4 +1,3 @@
-
 import os
 import asyncio
 import logging
@@ -52,10 +51,7 @@ async def start_handler(message: Message):
         await message.answer(
             "👋 Welcome to Anas APK Bot!\n\n"
             "📱 Get APK files from our channel.\n\n"
-            "📢 Our Channels:\n"
-            "• @sahatanas\n"
-            "• @sahatanass\n\n"
-            "⬇️ Click Download APK from a channel post "
+            "⬇️ Click the Download APK button from a published post "
             "to receive the file here!"
         )
         return
@@ -120,8 +116,7 @@ async def start_handler(message: Message):
 
         await message.answer(
             "✅ Download ready! Your APK file is above.\n\n"
-            "📢 Main Channel: @sahatanas\n"
-            "💾 Backup Channel: @sahatanass"
+            "🛡️ Please scan the file before installing."
         )
 
     except TelegramAPIError as e:
