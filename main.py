@@ -105,10 +105,8 @@ SENT_APK_KEYS = set()
 # ============================================================
 
 MY_FOOTER = (
-    "\n\n👤 <b>Modder:</b> Dev by anas\n"
-    "🔰 <b>Downloaded from:</b> @sahatanas\n"
-    "📢 <b>Join our backup:</b> @sahatanass\n"
-    "✅ <b>Safe &amp; Tested Mod Apps!</b>"
+    "\n\n🛡️ <b>APK information:</b> Please scan files before installing.\n"
+    "📦 <b>Delivery:</b> Telegram download bot"
 )
 
 GAMBLING_KEYWORDS = [
@@ -117,10 +115,18 @@ GAMBLING_KEYWORDS = [
 ]
 
 BAD_WORDS = [
-    "@Getmodpcs", "Join now", "t.me/",
-    "Subscribe", "Contact admin", "Download",
-    "Install", "Follow on"
+    "@Getmodpcs", "Join now", "t.me/", "https://", "http://",
+    "Subscribe", "Contact admin", "Download", "Install",
+    "Follow on", "join our", "join channel", "only 3000 entry"
 ]
+
+# Skip scam/gambling/hack-promotion posts instead of republishing them.
+BLOCKED_PROMO_TERMS = (
+    "1xbet", "aviator", "casino", "gambling", "betting", "melbet",
+    "baji", "jeet", "cricket365", "deposit money", "daily profit",
+    "earn up to", "profit limit", "hack and earn", "use hack",
+    "only deposit", "investment guaranteed"
+)
 
 # ============================================================
 # TELETHON CLIENT
@@ -606,29 +612,20 @@ def create_branded_poster(app_name: str, logo_bytes: bytes) -> bytes:
 # ============================================================
 
 async def get_photo(event):
+    """Return only a photo attached to this exact APK message.
+
+    Do not inspect nearby messages: adjacent paid-promotion images can
+    otherwise be incorrectly attached to an unrelated APK.
+    """
     try:
-        if event.photo:
-            return event.photo
-
-        messages = await client.get_messages(
-            event.chat_id,
-            limit=5,
-            max_id=event.id + 3,
-            min_id=max(event.id - 3, 0)
-        )
-
-        for msg in messages:
-            if msg.photo and msg.id != event.id:
-                return msg.photo
-
+        return event.photo if event.photo else None
     except Exception:
         logger.exception(
-            "Photo search failed | chat_id=%s | message_id=%s",
+            "Photo read failed | chat_id=%s | message_id=%s",
             event.chat_id,
             event.id
         )
-
-    return None
+        return None
 
 # ============================================================
 # DUPLICATE CHECK
@@ -672,7 +669,7 @@ def mark_sent(filename: str, file_id=None):
 
 def build_caption(
     filename: str,
-    desc: str,
+    desc: str = "",
     storage_msg_id: int = None
 ) -> str:
     info = parse_apk_name(filename)
@@ -682,22 +679,11 @@ def build_caption(
     ]
 
     if info["version"]:
-        lines.append(
-            f"🔖 <b>Version:</b> "
-            f"{html_escape(info['version'])}"
-        )
+        lines.append(f"🔖 <b>Version:</b> {html_escape(info['version'])}")
 
-    lines.append(
-        f"📦 <b>File:</b> "
-        f"<code>{html_escape(filename)}</code>"
-    )
+    lines.append(f"📦 <b>File:</b> <code>{html_escape(filename)}</code>")
+    lines.append("\n📝 <b>Clean APK release post</b>")
 
-    if desc:
-        lines.append(
-            f"\n📝 {html_escape(desc)}"
-        )
-
-    # Never publish a broken or empty download link.
     if storage_msg_id and storage_msg_id > 0:
         download_url = (
             f"{PUBLIC_BASE_URL}/download/{storage_msg_id}"
@@ -705,18 +691,13 @@ def build_caption(
             f"&version={quote(info['version'] or 'Latest')}"
             f"&file={quote(filename)}"
         )
-
         lines.append(
-            f"\n⬇️ <b><a href=\"{download_url}\">"
-            f"Download APK</a></b>"
+            f"\n⬇️ <b><a href=\"{download_url}\">Download APK</a></b>"
         )
     else:
-        lines.append(
-            "\n⚠️ Download link is temporarily unavailable."
-        )
+        lines.append("\n⚠️ Download link is temporarily unavailable.")
 
     lines.append(MY_FOOTER)
-
     return "\n".join(lines)
 
 # ============================================================
@@ -884,10 +865,14 @@ async def handler(event):
             return
 
         text = event.message.text or ""
+        source_content = (filename + " " + text).lower()
 
         if any(
-            keyword in (filename + text).lower()
+            keyword in source_content
             for keyword in GAMBLING_KEYWORDS
+        ) or any(
+            keyword in source_content
+            for keyword in BLOCKED_PROMO_TERMS
         ):
             logger.info(
                 "🚫 Gambling APK skipped: %s",
@@ -945,7 +930,8 @@ async def handler(event):
             # the user supplied a photo; otherwise online logo is preferred.
             pass
 
-        clean_desc = clean_text_content(text)
+        # Do not republish source captions, external links, or join-channel promotions.
+        clean_desc = ""
 
         # Saved Messages → process immediately
         if event.chat_id == ME_ID:
