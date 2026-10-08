@@ -24,6 +24,12 @@ OWNER_ID = int(
     os.environ.get("OWNER_ID", "7701549179")
 )
 
+BRAND_NAME = os.environ.get("BRAND_NAME", "Anas APK System").strip()
+CHANNEL_DISPLAY_NAME = os.environ.get(
+    "CHANNEL_DISPLAY_NAME",
+    "GETS MODS AND APK PREMIUM FREE 👀"
+).strip()
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s"
@@ -33,6 +39,22 @@ logger = logging.getLogger("download_bot")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+
+
+# ============================================================
+# DOWNLOAD MESSAGE DESIGN
+# ============================================================
+
+def build_delivery_caption() -> str:
+    return (
+        f"<b>📦 {BRAND_NAME}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"📱 <b>APK file ready</b>\n"
+        f"📢 <b>Channel:</b> {CHANNEL_DISPLAY_NAME}\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"✅ <b>Download ready</b>\n"
+        f"🛡️ Please scan the file before installing."
+    )
 
 
 # ============================================================
@@ -49,10 +71,11 @@ async def start_handler(message: Message):
     # Normal /start
     if len(args) == 1:
         await message.answer(
-            "👋 Welcome to Anas APK Bot!\n\n"
-            "📱 Get APK files from our channel.\n\n"
-            "⬇️ Click the Download APK button from a published post "
-            "to receive the file here!"
+            f"<b>👋 Welcome to {BRAND_NAME}</b>\n\n"
+            f"📱 Get APK files from <b>{CHANNEL_DISPLAY_NAME}</b>.\n\n"
+            "⬇️ Use the <b>Download APK</b> button from a published post "
+            "to receive the file here.",
+            parse_mode="HTML"
         )
         return
 
@@ -92,16 +115,19 @@ async def start_handler(message: Message):
     )
 
     loading = await message.answer(
-        "⏳ Please wait...\n"
-        "📦 Fetching your APK file..."
+        "⏳ <b>Preparing your APK...</b>\n"
+        "📦 Please wait a moment.",
+        parse_mode="HTML"
     )
 
     try:
-        # Copy the original APK/document from storage channel
+        # Copy the original APK/document with our own branded caption.
         copied_message = await bot.copy_message(
             chat_id=message.chat.id,
             from_chat_id=STORAGE_CHANNEL_ID,
-            message_id=storage_msg_id
+            message_id=storage_msg_id,
+            caption=build_delivery_caption(),
+            parse_mode="HTML"
         )
 
         logger.info(
@@ -113,11 +139,6 @@ async def start_handler(message: Message):
         )
 
         await loading.delete()
-
-        await message.answer(
-            "✅ Download ready! Your APK file is above.\n\n"
-            "🛡️ Please scan the file before installing."
-        )
 
     except TelegramAPIError as e:
         logger.exception(
