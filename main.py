@@ -170,7 +170,8 @@ def landing_page_html(
     safe_version = html_escape(version or "Latest")
     safe_filename = html_escape(filename or "Android Application")
     telegram_link = f"https://t.me/{DOWNLOAD_BOT_USERNAME}?start=dl_{storage_msg_id}"
-    poster_url = f"/poster/{storage_msg_id}?name={quote(app_name or 'APK Application')}&version={quote(version or 'Latest')}"
+    variant = sum((i + 1) * ord(ch) for i, ch in enumerate(filename or app_name)) % 6
+    poster_url = f"/poster/{storage_msg_id}?name={quote(app_name or 'APK Application')}&version={quote(version or 'Latest')}&variant={variant}"
     visited_key = f"anas_ad_visited_{storage_msg_id}"
 
     return f'''<!DOCTYPE html>
@@ -309,7 +310,8 @@ async def start_web_server():
                 return web.Response(body=cached, content_type="image/png", headers={"Cache-Control": "public, max-age=3600"})
 
             app_name = request.query.get("name", "APK Application")
-            poster = await make_dynamic_poster(app_name)
+            variant = int(request.query.get("variant", str(storage_msg_id)))
+            poster = await make_dynamic_poster(app_name, variant=variant)
             if not poster:
                 return web.Response(status=404, text="Poster unavailable")
             _poster_cache_put(storage_msg_id, poster)
@@ -438,12 +440,10 @@ APP_DOMAINS = {
     "discord": ["discord.com"],
     "reddit": ["reddit.com"],
     "pinterest": ["pinterest.com"],
-    "x": ["x.com"],
     "twitter": ["x.com"],
     "mx player": ["mxplayer.in"],
     "mxplayer": ["mxplayer.in"],
     "playit": ["playit.vc", "playit.app"],
-    "hex blade": ["hexblade.com"],
     "linkedin": ["linkedin.com"],
     "canva": ["canva.com"],
     "picsart": ["picsart.com"],
@@ -458,23 +458,25 @@ def _normalise_app_name(name: str) -> str:
 
 
 def logo_domains_for_app(app_name: str):
+    """Return domains only for confident app-name matches.
+
+    Avoid substring matches such as the ``x`` in ``hex blade``; those
+    caused unrelated logos to be attached to an APK.
+    """
     normalized = _normalise_app_name(app_name)
     domains = []
 
     for key, values in APP_DOMAINS.items():
-        if key in normalized or normalized in key:
+        key_norm = _normalise_app_name(key)
+        if normalized == key_norm or normalized.startswith(key_norm + " ") or normalized.endswith(" " + key_norm):
             domains.extend(values)
 
-    # Reasonable candidates for lesser-known apps.
-    compact = normalized.replace(" ", "")
-    if compact:
-        domains.extend([
-            f"{compact}.com",
-            f"{compact}.app",
-            f"{compact}.net",
-        ])
+    # A single-letter brand is only safe when it is the complete app name.
+    if normalized in {"x", "twitter"}:
+        domains.extend(["x.com", "twitter.com"])
 
-    # Keep order but remove duplicates.
+    # For unknown apps, do not guess a random favicon domain. A wrong logo
+    # is worse than skipping the poster.
     return list(dict.fromkeys(domains))
 
 
@@ -571,7 +573,7 @@ def _make_gradient(size, top, bottom):
     return img.convert("RGBA")
 
 
-def create_branded_poster(app_name: str, logo_bytes: bytes) -> bytes:
+def create_branded_poster(app_name: str, logo_bytes: bytes, variant: int = 0) -> bytes:
     'Create one of several branded poster layouts. The layout changes per APK.'
     global POSTER_COUNTER
     W, H = 1080, 1080
@@ -587,8 +589,9 @@ def create_branded_poster(app_name: str, logo_bytes: bytes) -> bytes:
     f_small = _font(font_regular, 26)
     f_tag = _font(font_bold, 29)
 
-    # Rotate layouts so every generated APK poster uses a different design.
-    layout = POSTER_COUNTER % 4
+    # Choose the layout from the APK/storage identity when available.
+    # This keeps the exact same poster for the channel and landing page.
+    layout = int(variant) % 6
     POSTER_COUNTER += 1
 
     palettes = [
@@ -596,6 +599,8 @@ def create_branded_poster(app_name: str, logo_bytes: bytes) -> bytes:
         ((14, 104, 125), (24, 35, 113)),
         ((168, 28, 92), (48, 20, 132)),
         ((18, 104, 65), (19, 31, 111)),
+        ((18, 70, 120), (40, 20, 105)),
+        ((150, 52, 20), (64, 18, 92)),
     ]
     img = _make_gradient((W, H), *palettes[layout])
     overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
@@ -613,10 +618,19 @@ def create_branded_poster(app_name: str, logo_bytes: bytes) -> bytes:
         for i in range(-300, 1300, 180):
             od.polygon([(i, 0), (i+120, 0), (i-180, H), (i-300, H)], fill=(255, 255, 255, 18))
         od.ellipse((100, 210, 980, 1090), fill=(0, 0, 0, 38))
-    else:
+    elif layout == 3:
         od.rounded_rectangle((55, 45, W-55, H-45), radius=55, outline=(255,255,255,55), width=3)
         for x, y, r in [(110,160,80),(930,170,120),(120,900,130),(930,900,90)]:
             od.ellipse((x-r,y-r,x+r,y+r), fill=(255,255,255,22))
+    elif layout == 4:
+        od.rectangle((0, 0, W, 170), fill=(0,0,0,65))
+        od.rectangle((0, 880, W, H), fill=(0,0,0,80))
+        for x in (90, 990):
+            od.ellipse((x-180, 380, x+180, 740), fill=(255,255,255,18))
+    else:
+        od.polygon([(0, 0), (W, 0), (W, 360), (700, 0)], fill=(255,255,255,22))
+        od.polygon([(0, H), (0, 760), (380, H)], fill=(0,0,0,55))
+        od.rounded_rectangle((65, 65, W-65, H-65), radius=48, outline=(255,255,255,45), width=3)
 
     overlay = overlay.filter(ImageFilter.GaussianBlur(7))
     img = Image.alpha_composite(img, overlay)
@@ -647,23 +661,24 @@ def create_branded_poster(app_name: str, logo_bytes: bytes) -> bytes:
 
     strip_y = 930
     if layout % 2 == 0:
-        draw.rounded_rectangle((70, strip_y, W-70, 1000), radius=28, fill=(8,5,65,185), outline=(215,115,255,230), width=3)
+        draw.rounded_rectangle((70, strip_y, W-70, 1000), radius=28, fill=(8,5,65,205), outline=(215,115,255,230), width=3)
+        _draw_centered(draw, "★ Anas APK ★", 950, f_tag, W, white)
     else:
-        draw.rounded_rectangle((70, strip_y, W-70, 1000), radius=28, fill=(255,255,255,24), outline=(255,255,255,150), width=2)
-    _draw_centered(draw, "★ Anas APK ★", 950, f_tag, W, white)
+        draw.rounded_rectangle((70, strip_y, W-70, 1000), radius=28, fill=(10,12,35,175), outline=(255,255,255,175), width=2)
+        _draw_centered(draw, "★ Anas APK ★", 950, f_tag, W, white)
 
     out = io.BytesIO()
     img.convert("RGB").save(out, format="PNG", optimize=True)
     return out.getvalue()
 
 
-async def make_dynamic_poster(app_name: str):
-    'Fetch a real app logo and generate a fresh branded poster.'
+async def make_dynamic_poster(app_name: str, variant: int = 0):
+    'Fetch the matching app logo and generate one coherent branded poster.'
     logo = await fetch_online_app_logo(app_name)
     if not logo:
         return None
     try:
-        poster = create_branded_poster(app_name, logo)
+        poster = create_branded_poster(app_name, logo, variant=variant)
         STATS["logo_generated"] += 1
         return poster
     except Exception:
@@ -733,7 +748,8 @@ def mark_sent(filename: str, file_id=None):
 def build_caption(
     filename: str,
     desc: str = "",
-    storage_msg_id: int = None
+    storage_msg_id: int = None,
+    poster_variant: int = 0
 ) -> str:
     info = parse_apk_name(filename)
 
@@ -753,6 +769,7 @@ def build_caption(
             f"?name={quote(info['clean_name'])}"
             f"&version={quote(info['version'] or 'Latest')}"
             f"&file={quote(filename)}"
+            f"&variant={int(poster_variant) % 6}"
         )
         lines.append(
             f"\n⬇️ <b><a href=\"{download_url}\">Download APK</a></b>"
@@ -1003,10 +1020,12 @@ async def handler(event):
 
             _poster_cache_put(storage_msg_id, photo)
 
+            poster_variant = sum((i + 1) * ord(ch) for i, ch in enumerate(filename)) % 6
             final_caption = build_caption(
                 filename,
                 clean_desc,
-                storage_msg_id
+                storage_msg_id,
+                poster_variant=poster_variant
             )
 
             success_count = 0
@@ -1049,6 +1068,7 @@ async def handler(event):
             "filename": filename,
             "file_id": file_id,
             "unique_id": unique_id,
+            "poster_variant": sum((i + 1) * ord(ch) for i, ch in enumerate(filename)) % 6,
         })
 
         SENT_CACHE.append(unique_id)
@@ -1100,10 +1120,12 @@ async def worker():
             # 2. Build caption with valid download link
             _poster_cache_put(storage_msg_id, item["photo"])
 
+            poster_variant = item.get("poster_variant", sum((i + 1) * ord(ch) for i, ch in enumerate(filename)) % 6)
             final_caption = build_caption(
                 filename,
                 item["clean_desc"],
-                storage_msg_id
+                storage_msg_id,
+                poster_variant=poster_variant
             )
 
             # 3. Send to all destination channels
