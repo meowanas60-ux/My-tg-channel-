@@ -100,6 +100,11 @@ STATS = {
 # This is in-memory; use a database for permanent persistence.
 SENT_APK_KEYS = set()
 
+# In-memory poster cache only. No database is used.
+POSTER_CACHE = {}
+MAX_POSTER_CACHE = 300
+POSTER_COUNTER = 0
+
 # ============================================================
 # FOOTER / FILTERS
 # ============================================================
@@ -142,11 +147,30 @@ client = TelegramClient(
 # WEB SERVER + APK LANDING PAGE
 # ============================================================
 
-def landing_page_html(storage_msg_id: int, app_name: str = "APK Application", version: str = "Latest", filename: str = "Android Application") -> str:
+def _poster_cache_put(storage_msg_id: int, poster_bytes: bytes):
+    if not storage_msg_id or not poster_bytes:
+        return
+    POSTER_CACHE[storage_msg_id] = poster_bytes
+    while len(POSTER_CACHE) > MAX_POSTER_CACHE:
+        oldest = next(iter(POSTER_CACHE))
+        POSTER_CACHE.pop(oldest, None)
+
+
+def _poster_cache_get(storage_msg_id: int):
+    return POSTER_CACHE.get(storage_msg_id)
+
+
+def landing_page_html(
+    storage_msg_id: int,
+    app_name: str = "APK Application",
+    version: str = "Latest",
+    filename: str = "Android Application",
+) -> str:
     safe_app_name = html_escape(app_name or "APK Application")
     safe_version = html_escape(version or "Latest")
     safe_filename = html_escape(filename or "Android Application")
     telegram_link = f"https://t.me/{DOWNLOAD_BOT_USERNAME}?start=dl_{storage_msg_id}"
+    poster_url = f"/poster/{storage_msg_id}?name={quote(app_name or 'APK Application')}&version={quote(version or 'Latest')}"
     visited_key = f"anas_ad_visited_{storage_msg_id}"
 
     return f'''<!DOCTYPE html>
@@ -158,66 +182,69 @@ def landing_page_html(storage_msg_id: int, app_name: str = "APK Application", ve
 <meta name="description" content="Download {safe_app_name} from Anas APK System.">
 <style>
 *{{box-sizing:border-box}}
-html{{min-height:100%}}
-body{{min-height:100vh;margin:0;padding:24px 12px;font-family:Arial,Helvetica,sans-serif;color:#fff;background:linear-gradient(180deg,#70bd79 0%,#55a99a 38%,#347fb1 72%,#2364a4 100%)}}
-.page{{width:100%;max-width:480px;margin:0 auto}}
-.brand{{text-align:center;margin:8px 0 24px}}
-.brand-symbol{{width:94px;height:94px;margin:0 auto 18px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.16);border:2px solid rgba(255,255,255,.55);box-shadow:0 10px 30px rgba(0,0,0,.12);font-size:31px;font-weight:800;letter-spacing:-2px}}
-.brand h1{{margin:0;font-size:25px;font-weight:800}}
-.brand p{{margin:8px 0 0;color:rgba(255,255,255,.82);font-size:13px}}
-.card{{padding:22px;border-radius:24px;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.28);box-shadow:0 18px 45px rgba(0,0,0,.13);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}}
-.app-icon{{width:78px;height:78px;margin:0 auto 14px;border-radius:20px;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.92);color:#277bb0;font-size:26px;font-weight:800;box-shadow:0 8px 20px rgba(0,0,0,.12)}}
-.app-title{{text-align:center;margin-bottom:18px}}
-.app-title h2{{margin:0;font-size:23px;font-weight:800;word-break:break-word}}
-.app-title span{{display:inline-block;margin-top:8px;padding:5px 11px;border-radius:30px;background:rgba(255,255,255,.18);color:rgba(255,255,255,.9);font-size:12px}}
-.details{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin:18px 0}}
-.detail{{padding:12px 8px;border-radius:13px;text-align:center;background:rgba(255,255,255,.13);border:1px solid rgba(255,255,255,.16)}}
-.detail small{{display:block;margin-bottom:5px;color:rgba(255,255,255,.7);font-size:10px;text-transform:uppercase}}
-.detail strong{{display:block;color:#fff;font-size:13px;word-break:break-word}}
-.ad-box{{width:100%;margin:22px 0;padding:7px 0;text-align:center;overflow:hidden}}
-.ad-label{{margin-bottom:7px;color:rgba(255,255,255,.65);font-size:10px;letter-spacing:1px;text-transform:uppercase}}
-.section-title{{margin:20px 0 8px;font-size:17px}}
-.description{{margin:0;color:rgba(255,255,255,.8);font-size:13px;line-height:1.7}}
-.file-name{{margin-top:15px;padding:11px;border-radius:10px;background:rgba(0,0,0,.12);color:rgba(255,255,255,.78);font-size:11px;line-height:1.5;word-break:break-word}}
-.download-btn{{display:block;width:100%;margin-top:22px;padding:15px 18px;border:0;border-radius:13px;background:#fff;color:#2775aa;font-size:16px;font-weight:800;text-align:center;text-decoration:none;cursor:pointer;box-shadow:0 8px 22px rgba(0,0,0,.15);transition:transform .2s,background .2s}}
-.download-btn:hover{{background:#eaf7ff;transform:translateY(-2px)}}
+html{{min-height:100%;background:#09051d}}
+body{{min-height:100vh;margin:0;padding:0;font-family:Arial,Helvetica,sans-serif;color:#fff;background:#09051d;overflow-x:hidden}}
+.page{{width:100%;min-height:100vh;position:relative;isolation:isolate}}
+.hero{{position:relative;min-height:100vh;display:flex;align-items:flex-end;justify-content:center;padding:18px 12px 28px;overflow:hidden}}
+.hero-bg{{position:absolute;inset:0;background-image:linear-gradient(180deg,rgba(7,3,25,.10) 0%,rgba(7,3,25,.30) 42%,rgba(7,3,25,.94) 92%),url('{poster_url}');background-size:cover;background-position:center top;filter:saturate(1.08);transform:scale(1.04);z-index:-3}}
+.hero-blur{{position:absolute;inset:-35px;background-image:url('{poster_url}');background-size:cover;background-position:center top;filter:blur(28px) saturate(1.15);opacity:.38;z-index:-4}}
+.hero-glass{{position:absolute;inset:0;background:linear-gradient(180deg,rgba(0,0,0,.04),rgba(5,2,20,.18) 42%,rgba(5,2,20,.82) 100%);z-index:-2}}
+.content{{width:100%;max-width:520px;margin:0 auto}}
+.topbar{{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;padding:0 4px}}
+.brand{{font-size:14px;font-weight:800;letter-spacing:.3px;text-shadow:0 2px 12px rgba(0,0,0,.45)}}
+.badge{{padding:7px 11px;border-radius:999px;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.26);backdrop-filter:blur(10px);font-size:11px;font-weight:700}}
+.card{{padding:20px;border-radius:26px;background:rgba(8,4,27,.70);border:1px solid rgba(255,255,255,.18);box-shadow:0 20px 55px rgba(0,0,0,.38);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}}
+.kicker{{display:flex;align-items:center;gap:8px;color:#d9ccff;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px}}
+.dot{{width:7px;height:7px;border-radius:50%;background:#7cffc4;box-shadow:0 0 12px #7cffc4}}
+.app-title{{margin:9px 0 4px;font-size:29px;line-height:1.12;font-weight:900;word-break:break-word}}
+.version{{color:#c9bce9;font-size:13px}}
+.details{{display:grid;grid-template-columns:repeat(2,1fr);gap:9px;margin:18px 0 12px}}
+.detail{{padding:11px 10px;border-radius:13px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.10)}}
+.detail small{{display:block;color:#9f93bd;font-size:9px;text-transform:uppercase;letter-spacing:.8px;margin-bottom:4px}}
+.detail strong{{display:block;color:#fff;font-size:12px;word-break:break-word}}
+.ad-box{{width:100%;margin:14px 0 5px;padding:6px 0;text-align:center;overflow:hidden}}
+.ad-label{{margin-bottom:6px;color:#8e83aa;font-size:9px;letter-spacing:1px;text-transform:uppercase}}
+.file-name{{margin-top:13px;padding:11px 12px;border-radius:12px;background:rgba(0,0,0,.20);color:#d7d0e5;font-size:11px;line-height:1.5;word-break:break-word}}
+.download-btn{{display:block;width:100%;margin-top:16px;padding:15px 18px;border:0;border-radius:14px;background:linear-gradient(135deg,#fff,#d9ccff);color:#31116e;font-size:16px;font-weight:900;text-align:center;text-decoration:none;cursor:pointer;box-shadow:0 10px 28px rgba(0,0,0,.26);transition:transform .18s,filter .18s}}
+.download-btn:hover{{filter:brightness(1.04);transform:translateY(-1px)}}
 .download-btn:active{{transform:translateY(0)}}
-.note{{margin:12px 0 0;color:rgba(255,255,255,.72);font-size:11px;line-height:1.6;text-align:center}}
-.footer{{margin:22px 0 5px;color:rgba(255,255,255,.68);font-size:11px;text-align:center}}
-@media(max-width:360px){{body{{padding:18px 9px}}.card{{padding:17px}}.brand h1{{font-size:22px}}}}
+.note{{margin:10px 0 0;color:#9e94af;font-size:10px;line-height:1.5;text-align:center}}
+.warning{{margin-top:13px;color:#bcb3ca;font-size:10px;line-height:1.55;text-align:center}}
+.footer{{margin:13px 0 0;color:#8d839e;font-size:10px;text-align:center}}
+@media(max-width:380px){{.hero{{padding:12px 9px 18px}}.card{{padding:16px;border-radius:22px}}.app-title{{font-size:25px}}}}
 </style>
 </head>
 <body>
 <main class="page">
-<header class="brand"><div class="brand-symbol">GM</div><h1>Anas APK System</h1><p>Android Applications &amp; Downloads</p></header>
+<section class="hero">
+<div class="hero-blur"></div><div class="hero-bg"></div><div class="hero-glass"></div>
+<div class="content">
+<div class="topbar"><div class="brand">ANAS APK SYSTEM</div><div class="badge">ANDROID APK</div></div>
 <section class="card">
-<div class="app-icon">APK</div>
-<div class="app-title"><h2>{safe_app_name}</h2><span>{safe_version}</span></div>
+<div class="kicker"><span class="dot"></span> New APK release</div>
+<h1 class="app-title">{safe_app_name}</h1>
+<div class="version">Version: {safe_version}</div>
 <div class="details">
-<div class="detail"><small>Version</small><strong>{safe_version}</strong></div>
 <div class="detail"><small>Platform</small><strong>Android</strong></div>
-<div class="detail"><small>File Type</small><strong>APK</strong></div>
-<div class="detail"><small>Source</small><strong>Telegram</strong></div>
+<div class="detail"><small>Type</small><strong>APK</strong></div>
+<div class="detail"><small>Delivery</small><strong>Telegram Bot</strong></div>
+<div class="detail"><small>Source</small><strong>ANAS APK</strong></div>
 </div>
 
-<!-- Adsterra Native Banner -->
 <div class="ad-box"><div class="ad-label">Advertisement</div>
 <script async="async" data-cfasync="false" src="https://pl31376477.profitableratecpmnetwork.com/57efad1efb9e1a90ad6d5626c971d9e6/invoke.js"></script>
 <div id="container-57efad1efb9e1a90ad6d5626c971d9e6"></div>
 </div>
 
-<h3 class="section-title">About this application</h3>
-<p class="description">Review the application information below. Click the continue button to proceed to the download process.</p>
 <div class="file-name"><strong>File:</strong> {safe_filename}</div>
-
-<!-- First click: Smartlink. After Back: Telegram bot. -->
 <a id="continueDownload" class="download-btn" href="{ADSTERRA_SMARTLINK}" target="_self" rel="nofollow sponsored noopener noreferrer">Continue to Download</a>
-<p id="downloadNote" class="note">Tap once to continue. Return to this page and tap again to open the Telegram download bot.</p>
+<p id="downloadNote" class="note">Continue once, return here, then open Telegram to receive your APK.</p>
+<p class="warning">🛡️ Please scan the APK before installing.</p>
 </section>
 <div class="footer">© 2026 Anas APK System</div>
+</div>
+</section>
 </main>
-
-<!-- Adsterra Social Bar -->
 <script src="https://pl31376479.profitableratecpmnetwork.com/47/9e/72/479e72023d7d0e8985828d9969ff82a3.js"></script>
 <script>
 (function() {{
@@ -226,27 +253,19 @@ body{{min-height:100vh;margin:0;padding:24px 12px;font-family:Arial,Helvetica,sa
   const smartLink = {ADSTERRA_SMARTLINK!r};
   const telegramLink = {telegram_link!r};
   const visitedKey = {visited_key!r};
-
   function setTelegramMode() {{
     button.href = telegramLink;
-    button.target = '_self';
     button.textContent = 'Get APK from Telegram';
-    note.textContent = 'Tap the button again to open the Telegram bot and receive the file.';
+    note.textContent = 'Tap the button to open the Telegram bot and receive the file.';
   }}
-
-  if (sessionStorage.getItem(visitedKey) === 'true') {{
-    setTelegramMode();
-  }}
-
+  if (sessionStorage.getItem(visitedKey) === 'true') setTelegramMode();
   button.addEventListener('click', function() {{
     if (sessionStorage.getItem(visitedKey) !== 'true') {{
       sessionStorage.setItem(visitedKey, 'true');
       button.href = smartLink;
-      button.target = '_self';
       return;
     }}
     button.href = telegramLink;
-    button.target = '_self';
   }});
 }})();
 </script>
@@ -279,6 +298,29 @@ async def start_web_server():
     app.router.add_get("/", health_handler)
     app.router.add_get("/health", health_handler)
     app.router.add_get("/download/{storage_msg_id}", landing_handler)
+
+    async def poster_handler(request):
+        try:
+            storage_msg_id = int(request.match_info["storage_msg_id"])
+            if storage_msg_id <= 0:
+                raise ValueError
+            cached = _poster_cache_get(storage_msg_id)
+            if cached:
+                return web.Response(body=cached, content_type="image/png", headers={"Cache-Control": "public, max-age=3600"})
+
+            app_name = request.query.get("name", "APK Application")
+            poster = await make_dynamic_poster(app_name)
+            if not poster:
+                return web.Response(status=404, text="Poster unavailable")
+            _poster_cache_put(storage_msg_id, poster)
+            return web.Response(body=poster, content_type="image/png", headers={"Cache-Control": "public, max-age=3600"})
+        except (TypeError, ValueError):
+            return web.Response(text="Invalid poster link", status=400, content_type="text/plain")
+        except Exception:
+            logger.exception("Poster endpoint failed")
+            return web.Response(text="Poster error", status=500, content_type="text/plain")
+
+    app.router.add_get("/poster/{storage_msg_id}", poster_handler)
 
     runner = web.AppRunner(app)
     await runner.setup()
@@ -398,6 +440,10 @@ APP_DOMAINS = {
     "pinterest": ["pinterest.com"],
     "x": ["x.com"],
     "twitter": ["x.com"],
+    "mx player": ["mxplayer.in"],
+    "mxplayer": ["mxplayer.in"],
+    "playit": ["playit.vc", "playit.app"],
+    "hex blade": ["hexblade.com"],
     "linkedin": ["linkedin.com"],
     "canva": ["canva.com"],
     "picsart": ["picsart.com"],
@@ -498,114 +544,131 @@ def _font(path, size):
         return ImageFont.load_default()
 
 
-def create_branded_poster(app_name: str, logo_bytes: bytes) -> bytes:
-    """Create a purple/blue branded poster using the real app logo."""
-    W, H = 1080, 1080
+def _fit_logo_to_square(logo_bytes: bytes, size: int = 430):
+    icon = Image.open(io.BytesIO(logo_bytes)).convert("RGBA")
+    icon.thumbnail((size, size), Image.Resampling.LANCZOS)
+    canvas = Image.new("RGBA", (size, size), (255, 255, 255, 0))
+    x = (size - icon.width) // 2
+    y = (size - icon.height) // 2
+    canvas.alpha_composite(icon, (x, y))
+    return canvas
 
-    img = Image.new("RGB", (W, H), "#321078")
-    px = img.load()
 
-    # Purple-to-blue gradient matching the requested reference style.
-    top = (116, 11, 191)
-    bottom = (19, 35, 151)
-    for y in range(H):
-        t = y / max(H - 1, 1)
-        r = int(top[0] * (1 - t) + bottom[0] * t)
-        g = int(top[1] * (1 - t) + bottom[1] * t)
-        b = int(top[2] * (1 - t) + bottom[2] * t)
-        ImageDraw.Draw(img).line((0, y, W, y), fill=(r, g, b))
+def _draw_centered(draw, text, y, font, width, fill=(255, 255, 255, 255)):
+    box = draw.textbbox((0, 0), text, font=font)
+    x = (width - (box[2] - box[0])) // 2
+    draw.text((x, y), text, font=font, fill=fill)
 
-    overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    od = ImageDraw.Draw(overlay)
 
-    # Abstract leaf-like diagonal shapes.
-    leaf_color = (17, 7, 91, 145)
-    for x, y, w, h in [
-        (-40, 20, 220, 620), (110, -30, 170, 520),
-        (300, -70, 150, 430), (820, -40, 180, 560),
-        (950, 120, 190, 530), (-80, 690, 260, 500),
-        (820, 730, 250, 500),
-    ]:
-        od.polygon(
-            [(x, y), (x + w, y + 40), (x + w // 2, y + h),
-             (x + w // 3, y + h // 3)],
-            fill=leaf_color
-        )
-
-    # Soft glow behind the icon.
-    od.ellipse((250, 170, 830, 750), fill=(210, 30, 255, 45))
-    overlay = overlay.filter(ImageFilter.GaussianBlur(18))
-    img = Image.alpha_composite(img.convert("RGBA"), overlay)
-
+def _make_gradient(size, top, bottom):
+    w, h = size
+    img = Image.new("RGB", size, top)
     draw = ImageDraw.Draw(img)
-    white = (255, 255, 255, 255)
-    muted = (232, 218, 255, 255)
+    for y in range(h):
+        t = y / max(h - 1, 1)
+        c = tuple(int(top[i] * (1-t) + bottom[i] * t) for i in range(3))
+        draw.line((0, y, w, y), fill=c)
+    return img.convert("RGBA")
+
+
+def create_branded_poster(app_name: str, logo_bytes: bytes) -> bytes:
+    'Create one of several branded poster layouts. The layout changes per APK.'
+    global POSTER_COUNTER
+    W, H = 1080, 1080
+    clean_name = (app_name or "APK Application").strip()
+    if len(clean_name) > 28:
+        clean_name = clean_name[:28].rstrip() + "…"
 
     font_bold = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
     font_regular = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+    f_brand = _font(font_bold, 52)
+    f_sub = _font(font_regular, 27)
+    f_app = _font(font_bold, 61)
+    f_small = _font(font_regular, 26)
+    f_tag = _font(font_bold, 29)
 
-    f_brand = _font(font_bold, 54)
-    f_sub = _font(font_regular, 28)
-    f_app = _font(font_bold, 64)
-    f_small = _font(font_regular, 27)
-    f_tag = _font(font_bold, 30)
+    # Rotate layouts so every generated APK poster uses a different design.
+    layout = POSTER_COUNTER % 4
+    POSTER_COUNTER += 1
 
-    def centered(text, y, font, fill=white):
-        box = draw.textbbox((0, 0), text, font=font)
-        x = (W - (box[2] - box[0])) // 2
-        draw.text((x, y), text, font=font, fill=fill)
+    palettes = [
+        ((118, 10, 194), (20, 31, 150)),
+        ((14, 104, 125), (24, 35, 113)),
+        ((168, 28, 92), (48, 20, 132)),
+        ((18, 104, 65), (19, 31, 111)),
+    ]
+    img = _make_gradient((W, H), *palettes[layout])
+    overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    od = ImageDraw.Draw(overlay)
 
-    centered("Anas APK System", 55, f_brand)
-    centered("Android Applications & Downloads", 125, f_sub, muted)
+    if layout == 0:
+        for x, y, w, h in [(-40, 20, 220, 620), (110, -30, 170, 520), (820, -40, 180, 560), (950, 120, 190, 530), (-80, 690, 260, 500)]:
+            od.polygon([(x, y), (x+w, y+40), (x+w//2, y+h), (x+w//3, y+h//3)], fill=(10, 5, 80, 120))
+        od.ellipse((250, 160, 830, 740), fill=(230, 30, 255, 45))
+    elif layout == 1:
+        for r in (190, 300, 420, 540):
+            od.ellipse((540-r, 540-r, 540+r, 540+r), outline=(255,255,255,35), width=5)
+        od.rectangle((0, 0, W, 190), fill=(0, 0, 0, 55))
+    elif layout == 2:
+        for i in range(-300, 1300, 180):
+            od.polygon([(i, 0), (i+120, 0), (i-180, H), (i-300, H)], fill=(255, 255, 255, 18))
+        od.ellipse((100, 210, 980, 1090), fill=(0, 0, 0, 38))
+    else:
+        od.rounded_rectangle((55, 45, W-55, H-45), radius=55, outline=(255,255,255,55), width=3)
+        for x, y, r in [(110,160,80),(930,170,120),(120,900,130),(930,900,90)]:
+            od.ellipse((x-r,y-r,x+r,y+r), fill=(255,255,255,22))
 
-    # Real logo in a clean rounded white frame.
-    try:
-        icon = Image.open(io.BytesIO(logo_bytes)).convert("RGBA")
-        icon.thumbnail((420, 420), Image.Resampling.LANCZOS)
+    overlay = overlay.filter(ImageFilter.GaussianBlur(7))
+    img = Image.alpha_composite(img, overlay)
+    draw = ImageDraw.Draw(img)
+    white = (255,255,255,255)
+    muted = (235,225,255,235)
 
-        frame = Image.new("RGBA", (500, 500), (255, 255, 255, 255))
-        mask = Image.new("L", (500, 500), 0)
-        md = ImageDraw.Draw(mask)
-        md.rounded_rectangle((0, 0, 499, 499), radius=72, fill=255)
-        frame.putalpha(mask)
+    _draw_centered(draw, "Anas APK System", 52, f_brand, W, white)
+    _draw_centered(draw, "Android Applications & Downloads", 122, f_sub, W, muted)
 
-        icon_canvas = Image.new("RGBA", (500, 500), (255, 255, 255, 0))
-        ix = (500 - icon.width) // 2
-        iy = (500 - icon.height) // 2
-        icon_canvas.alpha_composite(icon, (ix, iy))
-        icon_canvas.putalpha(mask)
+    icon = _fit_logo_to_square(logo_bytes, 430)
+    frame_x, frame_y, frame_s = 290, 215, 500
+    shadow = Image.new("RGBA", (560,560), (0,0,0,0))
+    sd = ImageDraw.Draw(shadow)
+    sd.rounded_rectangle((30,30,530,530), radius=82, fill=(0,0,0,130))
+    shadow = shadow.filter(ImageFilter.GaussianBlur(24))
+    img.alpha_composite(shadow, (frame_x-30, frame_y-10))
 
-        shadow = Image.new("RGBA", (560, 560), (0, 0, 0, 0))
-        sd = ImageDraw.Draw(shadow)
-        sd.rounded_rectangle((30, 30, 530, 530), radius=80, fill=(0, 0, 0, 130))
-        shadow = shadow.filter(ImageFilter.GaussianBlur(25))
-        img.alpha_composite(shadow, (260, 205))
-        img.alpha_composite(frame, (290, 205))
-        img.alpha_composite(icon_canvas, (290, 205))
-    except Exception as exc:
-        raise RuntimeError(f"Invalid online logo image: {exc}")
+    frame = Image.new("RGBA", (frame_s, frame_s), (255,255,255,255))
+    mask = Image.new("L", (frame_s, frame_s), 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0,0,frame_s-1,frame_s-1), radius=72, fill=255)
+    frame.putalpha(mask)
+    img.alpha_composite(frame, (frame_x, frame_y))
+    img.alpha_composite(icon, (frame_x + 35, frame_y + 35))
 
-    clean_name = app_name.strip() or "APK Application"
-    if len(clean_name) > 25:
-        clean_name = clean_name[:25].rstrip() + "…"
+    _draw_centered(draw, clean_name, 760, f_app, W, white)
+    _draw_centered(draw, "Official app logo • Android APK", 835, f_small, W, muted)
 
-    centered(clean_name, 755, f_app)
-    centered("Official app logo • Android APK", 835, f_small, muted)
-
-    # Bottom brand strip.
     strip_y = 930
-    draw.rounded_rectangle(
-        (70, strip_y, W - 70, 1000),
-        radius=28,
-        fill=(8, 5, 65, 180),
-        outline=(180, 80, 255, 220),
-        width=3
-    )
-    centered("★ Anas APK ★", 950, f_tag)
+    if layout % 2 == 0:
+        draw.rounded_rectangle((70, strip_y, W-70, 1000), radius=28, fill=(8,5,65,185), outline=(215,115,255,230), width=3)
+    else:
+        draw.rounded_rectangle((70, strip_y, W-70, 1000), radius=28, fill=(255,255,255,24), outline=(255,255,255,150), width=2)
+    _draw_centered(draw, "★ Anas APK ★", 950, f_tag, W, white)
 
     out = io.BytesIO()
     img.convert("RGB").save(out, format="PNG", optimize=True)
     return out.getvalue()
+
+
+async def make_dynamic_poster(app_name: str):
+    'Fetch a real app logo and generate a fresh branded poster.'
+    logo = await fetch_online_app_logo(app_name)
+    if not logo:
+        return None
+    try:
+        poster = create_branded_poster(app_name, logo)
+        STATS["logo_generated"] += 1
+        return poster
+    except Exception:
+        logger.exception("Dynamic poster creation failed | app=%s", app_name)
+        return None
 
 # ============================================================
 # PHOTO FINDER
@@ -895,40 +958,33 @@ async def handler(event):
         if unique_id in SENT_CACHE:
             return
 
-        photo = await get_photo(event)
+        # Always create our own branded poster from the app logo.
+        # Source-channel photos are intentionally ignored so unrelated
+        # images never get attached to the wrong APK.
+        info = parse_apk_name(filename)
+        online_logo = await fetch_online_app_logo(info["clean_name"])
 
-        # If the source message has no photo, find the real app logo online.
-        # If no valid logo is found, skip this APK instead of generating fake
-        # initials such as YT, D, or SD.
-        if photo is None:
-            info = parse_apk_name(filename)
-            online_logo = await fetch_online_app_logo(info["clean_name"])
+        if online_logo is None:
+            logger.warning(
+                "⏭️ APK skipped: real logo not found | app=%s | filename=%s",
+                info["clean_name"],
+                filename
+            )
+            return
 
-            if online_logo is None:
-                logger.warning(
-                    "⏭️ APK skipped: real logo not found | app=%s | filename=%s",
-                    info["clean_name"],
-                    filename
-                )
-                return
-
-            try:
-                photo = create_branded_poster(
-                    info["clean_name"],
-                    online_logo
-                )
-                STATS["logo_generated"] += 1
-                logger.info(
-                    "🖼️ Real online logo poster created: %s",
-                    info["clean_name"]
-                )
-            except Exception:
-                logger.exception("Real logo poster creation failed")
-                return
-        elif not isinstance(photo, bytes):
-            # A source photo may be unrelated to the APK. Keep it only when
-            # the user supplied a photo; otherwise online logo is preferred.
-            pass
+        try:
+            photo = create_branded_poster(
+                info["clean_name"],
+                online_logo
+            )
+            STATS["logo_generated"] += 1
+            logger.info(
+                "🖼️ Dynamic branded poster created: %s",
+                info["clean_name"]
+            )
+        except Exception:
+            logger.exception("Dynamic poster creation failed")
+            return
 
         # Do not republish source captions, external links, or join-channel promotions.
         clean_desc = ""
@@ -944,6 +1000,8 @@ async def handler(event):
                     filename
                 )
                 return
+
+            _poster_cache_put(storage_msg_id, photo)
 
             final_caption = build_caption(
                 filename,
@@ -1040,6 +1098,8 @@ async def worker():
                 continue
 
             # 2. Build caption with valid download link
+            _poster_cache_put(storage_msg_id, item["photo"])
+
             final_caption = build_caption(
                 filename,
                 item["clean_desc"],
