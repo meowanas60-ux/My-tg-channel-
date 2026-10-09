@@ -100,6 +100,9 @@ STATS = {
 # This is in-memory; use a database for permanent persistence.
 SENT_APK_KEYS = set()
 
+# Default queue gap is 30 minutes; change with Saved Messages command /post <minutes>.
+POST_INTERVAL_MINUTES = 30
+
 # In-memory poster cache only. No database is used.
 POSTER_CACHE = {}
 MAX_POSTER_CACHE = 300
@@ -393,7 +396,11 @@ def parse_apk_name(filename: str) -> dict:
         flags=re.IGNORECASE
     )
 
+    # Remove source-channel handles / promo tags commonly embedded in filenames.
+    clean = re.sub(r"@[A-Za-z0-9_]{3,}", " ", clean)
+    clean = re.sub(r"(?i)\b(?:easy\s*apk|anas\s*apk|apk\s*mod)\b", " ", clean)
     clean = re.sub(r"[_\-]+", " ", clean).strip()
+    clean = re.sub(r"\s+", " ", clean).strip()
     clean = re.sub(r"([a-z])([A-Z])", r"\1 \2", clean).strip()
 
     if not clean:
@@ -893,6 +900,32 @@ async def handler(event):
             if sender and sender.id == ME_ID:
                 command = (event.text or "").strip().lower()
 
+                # Change queue posting interval from Saved Messages: /post 30
+                post_match = re.fullmatch(r"/post(?:\s+(\d{1,4}))?", command)
+                if post_match:
+                    global POST_INTERVAL_MINUTES
+                    if post_match.group(1) is None:
+                        await event.reply(
+                            f"⏱️ Current posting interval: <b>{POST_INTERVAL_MINUTES} minutes</b>\\n"
+                            "Change it by sending <code>/post 30</code> or <code>/post 15</code> in Saved Messages.",
+                            parse_mode="html"
+                        )
+                    else:
+                        minutes = int(post_match.group(1))
+                        if not 1 <= minutes <= 1440:
+                            await event.reply(
+                                "⚠️ Minutes must be between 1 and 1440. Example: <code>/post 30</code>",
+                                parse_mode="html"
+                            )
+                        else:
+                            POST_INTERVAL_MINUTES = minutes
+                            await event.reply(
+                                f"✅ Posting interval changed to <b>{POST_INTERVAL_MINUTES} minutes</b>.\\n"
+                                "This applies to the next queue wait. It resets to 30 minutes after a Render restart.",
+                                parse_mode="html"
+                            )
+                    return
+
                 if command == "/alive":
                     await event.reply(
                         f"✅ <b>Bot is Online!</b>\n"
@@ -975,25 +1008,19 @@ async def handler(event):
         if unique_id in SENT_CACHE:
             return
 
-        # Try to find a matching app logo and create the branded poster.
-        # If no confident logo is found (or poster creation fails), continue
-        # with a text-only post instead of dropping the APK. Never guess a
-        # different app's logo or attach an unrelated source-channel image.
+        # Always create our own branded poster from the app logo.
+        # Source-channel photos are intentionally ignored so unrelated
+        # images never get attached to the wrong APK.
         info = parse_apk_name(filename)
-        photo = None
         online_logo = await fetch_online_app_logo(info["clean_name"])
 
-        if online_logo is None:
-            logger.warning(
-                "🖼️ No matching app logo found; will post APK without picture | app=%s | filename=%s",
-                info["clean_name"],
-                filename
-            )
-        else:
+        photo = None
+        if online_logo is not None:
             try:
                 photo = create_branded_poster(
                     info["clean_name"],
-                    online_logo
+                    online_logo,
+                    variant=sum((i + 1) * ord(ch) for i, ch in enumerate(filename)) % 6
                 )
                 STATS["logo_generated"] += 1
                 logger.info(
@@ -1001,12 +1028,14 @@ async def handler(event):
                     info["clean_name"]
                 )
             except Exception:
+                logger.exception("Dynamic poster creation failed; posting without image")
                 photo = None
-                logger.exception(
-                    "Poster creation failed; will post APK without picture | app=%s | filename=%s",
-                    info["clean_name"],
-                    filename
-                )
+        else:
+            logger.warning(
+                "📝 No matching logo found; APK will be posted without image | app=%s | filename=%s",
+                info["clean_name"],
+                filename
+            )
 
         # Do not republish source captions, external links, or join-channel promotions.
         clean_desc = ""
@@ -1166,8 +1195,8 @@ async def worker():
                     filename
                 )
 
-            # 30-minute gap between queue items
-            await asyncio.sleep(1800)
+            # Configurable gap between queue items (default remains 30 minutes).
+            await asyncio.sleep(POST_INTERVAL_MINUTES * 60)
 
         except Exception:
             logger.exception(
@@ -1207,6 +1236,7 @@ async def main():
     logger.info("🤖 Download Bot: @%s", DOWNLOAD_BOT_USERNAME)
     logger.info("📢 Destination Channels: %s", len(DEST_CHANNELS))
     logger.info("🚫 Duplicate Blocker: ACTIVE")
+    logger.info("⏱️ Posting interval: %s minutes (Saved Messages: /post <minutes>)", POST_INTERVAL_MINUTES)
     logger.info("========================================")
 
     asyncio.create_task(worker())
