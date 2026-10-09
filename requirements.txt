@@ -4,3 +4,4 @@ requests
 aiohttp
 Pillow
 aiogram
+androguard>=4.1.2
