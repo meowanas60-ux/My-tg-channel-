@@ -85,6 +85,7 @@ logger = logging.getLogger("main_monitor")
 APP_QUEUE = []
 SENT_CACHE = []
 ME_ID = None
+POST_INTERVAL_SECONDS = 1800  # Default: 30 minutes; adjustable from Saved Messages
 
 STATS = {
     "total_sent": 0,
@@ -99,9 +100,6 @@ STATS = {
 # Use a combined identity so different versions are allowed.
 # This is in-memory; use a database for permanent persistence.
 SENT_APK_KEYS = set()
-
-# Default queue gap is 30 minutes; change with Saved Messages command /post <minutes>.
-POST_INTERVAL_MINUTES = 30
 
 # In-memory poster cache only. No database is used.
 POSTER_CACHE = {}
@@ -396,11 +394,7 @@ def parse_apk_name(filename: str) -> dict:
         flags=re.IGNORECASE
     )
 
-    # Remove source-channel handles / promo tags commonly embedded in filenames.
-    clean = re.sub(r"@[A-Za-z0-9_]{3,}", " ", clean)
-    clean = re.sub(r"(?i)\b(?:easy\s*apk|anas\s*apk|apk\s*mod)\b", " ", clean)
     clean = re.sub(r"[_\-]+", " ", clean).strip()
-    clean = re.sub(r"\s+", " ", clean).strip()
     clean = re.sub(r"([a-z])([A-Z])", r"\1 \2", clean).strip()
 
     if not clean:
@@ -900,30 +894,39 @@ async def handler(event):
             if sender and sender.id == ME_ID:
                 command = (event.text or "").strip().lower()
 
-                # Change queue posting interval from Saved Messages: /post 30
-                post_match = re.fullmatch(r"/post(?:\s+(\d{1,4}))?", command)
-                if post_match:
-                    global POST_INTERVAL_MINUTES
-                    if post_match.group(1) is None:
+                # Change queue posting interval from Telegram Saved Messages.
+                # Examples: /post, /post 30 (minutes), /post 5m, /post 30s.
+                if command == "/post" or command.startswith("/post "):
+                    global POST_INTERVAL_SECONDS
+                    parts = command.split()
+                    if len(parts) == 1:
                         await event.reply(
-                            f"⏱️ Current posting interval: <b>{POST_INTERVAL_MINUTES} minutes</b>\\n"
-                            "Change it by sending <code>/post 30</code> or <code>/post 15</code> in Saved Messages.",
+                            f"⏱️ Current posting interval: <b>{POST_INTERVAL_SECONDS // 60} minutes</b> "
+                            f"({POST_INTERVAL_SECONDS} seconds).\n"
+                            "Set with <code>/post 30</code> (minutes), "
+                            "<code>/post 5m</code>, or <code>/post 30s</code>.",
                             parse_mode="html"
                         )
-                    else:
-                        minutes = int(post_match.group(1))
-                        if not 1 <= minutes <= 1440:
-                            await event.reply(
-                                "⚠️ Minutes must be between 1 and 1440. Example: <code>/post 30</code>",
-                                parse_mode="html"
-                            )
-                        else:
-                            POST_INTERVAL_MINUTES = minutes
-                            await event.reply(
-                                f"✅ Posting interval changed to <b>{POST_INTERVAL_MINUTES} minutes</b>.\\n"
-                                "This applies to the next queue wait. It resets to 30 minutes after a Render restart.",
-                                parse_mode="html"
-                            )
+                        return
+                    raw = parts[1].strip().lower()
+                    match = re.fullmatch(r"(\d+)(s|m|h)?", raw)
+                    if not match:
+                        await event.reply("Use <code>/post 30</code> (minutes), <code>/post 5m</code>, or <code>/post 30s</code>.", parse_mode="html")
+                        return
+                    amount = int(match.group(1))
+                    unit = match.group(2) or "m"  # Bare number means minutes.
+                    multiplier = {"s": 1, "m": 60, "h": 3600}[unit]
+                    seconds = amount * multiplier
+                    if seconds < 60 or seconds > 86400:
+                        await event.reply("Interval must be between 1 minute and 24 hours.")
+                        return
+                    POST_INTERVAL_SECONDS = seconds
+                    await event.reply(
+                        f"✅ Posting interval updated to <b>{amount} {'second(s)' if unit == 's' else 'minute(s)' if unit == 'm' else 'hour(s)'}</b>.\n"
+                        "This setting lasts until the Render process restarts; default returns to 30 minutes.",
+                        parse_mode="html"
+                    )
+                    logger.info("Posting interval changed from Saved Messages to %s seconds", POST_INTERVAL_SECONDS)
                     return
 
                 if command == "/alive":
@@ -1013,28 +1016,27 @@ async def handler(event):
         # images never get attached to the wrong APK.
         info = parse_apk_name(filename)
         online_logo = await fetch_online_app_logo(info["clean_name"])
-
+        poster_variant = sum((i + 1) * ord(ch) for i, ch in enumerate(filename)) % 6
         photo = None
         if online_logo is not None:
             try:
                 photo = create_branded_poster(
                     info["clean_name"],
                     online_logo,
-                    variant=sum((i + 1) * ord(ch) for i, ch in enumerate(filename)) % 6
+                    variant=poster_variant
                 )
                 STATS["logo_generated"] += 1
                 logger.info(
-                    "🖼️ Dynamic branded poster created: %s",
-                    info["clean_name"]
+                    "🖼️ Dynamic branded poster created | app=%s | design=%s",
+                    info["clean_name"], poster_variant
                 )
             except Exception:
-                logger.exception("Dynamic poster creation failed; posting without image")
+                logger.exception("Dynamic poster creation failed; continuing without image")
                 photo = None
         else:
             logger.warning(
-                "📝 No matching logo found; APK will be posted without image | app=%s | filename=%s",
-                info["clean_name"],
-                filename
+                "🖼️ No verified logo found; posting without image | app=%s | filename=%s",
+                info["clean_name"], filename
             )
 
         # Do not republish source captions, external links, or join-channel promotions.
@@ -1102,7 +1104,7 @@ async def handler(event):
             "filename": filename,
             "file_id": file_id,
             "unique_id": unique_id,
-            "poster_variant": sum((i + 1) * ord(ch) for i, ch in enumerate(filename)) % 6,
+            "poster_variant": poster_variant,
         })
 
         SENT_CACHE.append(unique_id)
@@ -1195,8 +1197,8 @@ async def worker():
                     filename
                 )
 
-            # Configurable gap between queue items (default remains 30 minutes).
-            await asyncio.sleep(POST_INTERVAL_MINUTES * 60)
+            # Default is 30 minutes; Saved Messages /post command adjusts it at runtime.
+            await asyncio.sleep(POST_INTERVAL_SECONDS)
 
         except Exception:
             logger.exception(
@@ -1236,7 +1238,6 @@ async def main():
     logger.info("🤖 Download Bot: @%s", DOWNLOAD_BOT_USERNAME)
     logger.info("📢 Destination Channels: %s", len(DEST_CHANNELS))
     logger.info("🚫 Duplicate Blocker: ACTIVE")
-    logger.info("⏱️ Posting interval: %s minutes (Saved Messages: /post <minutes>)", POST_INTERVAL_MINUTES)
     logger.info("========================================")
 
     asyncio.create_task(worker())
