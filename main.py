@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
 from aiohttp import web
-from telethon import TelegramClient, events
+from telethon import TelegramClient, events, Button
 from telethon.sessions import StringSession
 from telethon.errors import FloodWaitError
 
@@ -356,7 +356,17 @@ def clean_text_content(text):
 # ============================================================
 
 def parse_apk_name(filename: str) -> dict:
-    name = filename
+    # Strip source-channel branding/handles from APK filenames while keeping
+    # the app name and version. Example: Subcap+Pro+4.1.0-@EasyAPK.apk.
+    name = os.path.basename(filename or "APK Application")
+    for ext in (".apk", ".xapk", ".apks"):
+        if name.lower().endswith(ext):
+            name = name[:-len(ext)]
+            break
+    name = re.sub(r"(?i)(?:^|[\s_\-+])@(?:[A-Za-z0-9_]{3,})", " ", name)
+    name = re.sub(r"(?i)(?:t\.me/|telegram\.me/)[A-Za-z0-9_]+", " ", name)
+    name = re.sub(r"(?i)\b(?:easyapk|anasapk|getmodpcs?)\b", " ", name)
+    name = re.sub(r"[\s_\-+]+$", "", name).strip()
 
     for ext in (".apk", ".xapk", ".apks"):
         name = name.replace(ext, "")
@@ -394,7 +404,10 @@ def parse_apk_name(filename: str) -> dict:
         flags=re.IGNORECASE
     )
 
-    clean = re.sub(r"[_\-]+", " ", clean).strip()
+    clean = re.sub(r"@\w+", " ", clean)
+    clean = re.sub(r"(?i)\b(?:easyapk|anasapk|getmodpcs?)\b", " ", clean)
+    clean = re.sub(r"[+_\-]+", " ", clean).strip()
+    clean = re.sub(r"\s+", " ", clean)
     clean = re.sub(r"([a-z])([A-Z])", r"\1 \2", clean).strip()
 
     if not clean:
@@ -411,6 +424,44 @@ def parse_apk_name(filename: str) -> dict:
         "version": version,
         "full_display": display,
     }
+
+# ============================================================
+# ORIGINAL ICON EMBEDDED INSIDE APK
+# ============================================================
+
+async def extract_embedded_apk_icon(message):
+    """Prefer the app icon packaged inside the APK over a guessed web logo."""
+    try:
+        apk_bytes = await client.download_media(message, file=bytes)
+        if not apk_bytes:
+            return None
+
+        def _extract(data):
+            try:
+                from androguard.core.apk import APK
+                apk = APK(data)
+                icon_path = apk.get_app_icon()
+                if not icon_path:
+                    return None
+                icon_data = apk.get_file(icon_path)
+                if not icon_data:
+                    return None
+                image = Image.open(io.BytesIO(icon_data)).convert("RGBA")
+                image.load()
+                if image.width < 24 or image.height < 24:
+                    return None
+                out = io.BytesIO()
+                image.save(out, format="PNG")
+                return out.getvalue()
+            except Exception as exc:
+                logger.info("Embedded APK icon extraction unavailable: %s", exc)
+                return None
+
+        return await asyncio.to_thread(_extract, apk_bytes)
+    except Exception:
+        logger.exception("Could not read icon embedded in APK")
+        return None
+
 
 # ============================================================
 # REAL APP LOGO / BRANDED POSTER
@@ -825,7 +876,19 @@ async def save_to_storage(apk_msg):
 # SEND TO DESTINATION CHANNEL
 # ============================================================
 
-async def send_to_channel(dest, caption, photo):
+def make_post_buttons(storage_msg_id, filename, poster_variant=0):
+    """Inline action buttons for each release post."""
+    info = parse_apk_name(filename)
+    url = (
+        f"{PUBLIC_BASE_URL}/download/{storage_msg_id}"
+        f"?name={quote(info['clean_name'])}"
+        f"&version={quote(info['version'] or 'Latest')}"
+        f"&file={quote(filename)}&variant={int(poster_variant) % 6}"
+    )
+    return [[Button.url("⬇️ Download APK", url)],
+            [Button.url("🤖 Get via Telegram Bot", f"https://t.me/{DOWNLOAD_BOT_USERNAME}?start=dl_{storage_msg_id}")]]
+
+async def send_to_channel(dest, caption, photo, buttons=None):
     try:
         if photo and isinstance(photo, bytes):
             buf = io.BytesIO(photo)
@@ -836,7 +899,8 @@ async def send_to_channel(dest, caption, photo):
                 file=buf,
                 caption=caption,
                 parse_mode="html",
-                link_preview=False
+                link_preview=False,
+                buttons=buttons
             )
 
         elif photo:
@@ -845,7 +909,8 @@ async def send_to_channel(dest, caption, photo):
                 file=photo,
                 caption=caption,
                 parse_mode="html",
-                link_preview=False
+                link_preview=False,
+                buttons=buttons
             )
 
         else:
@@ -853,7 +918,8 @@ async def send_to_channel(dest, caption, photo):
                 dest,
                 message=caption,
                 parse_mode="html",
-                link_preview=False
+                link_preview=False,
+                buttons=buttons
             )
 
         logger.info("📤 Sent to destination: %s", dest)
@@ -1015,7 +1081,10 @@ async def handler(event):
         # Source-channel photos are intentionally ignored so unrelated
         # images never get attached to the wrong APK.
         info = parse_apk_name(filename)
-        online_logo = await fetch_online_app_logo(info["clean_name"])
+        # The APK's own embedded icon is the most reliable app-specific image.
+        online_logo = await extract_embedded_apk_icon(event.message)
+        if online_logo is None:
+            online_logo = await fetch_online_app_logo(info["clean_name"])
         poster_variant = sum((i + 1) * ord(ch) for i, ch in enumerate(filename)) % 6
         photo = None
         if online_logo is not None:
@@ -1070,7 +1139,8 @@ async def handler(event):
                 ok = await send_to_channel(
                     dest,
                     final_caption,
-                    photo
+                    photo,
+                    buttons=make_post_buttons(storage_msg_id, filename, poster_variant)
                 )
 
                 if ok:
@@ -1171,7 +1241,8 @@ async def worker():
                 ok = await send_to_channel(
                     dest,
                     final_caption,
-                    item["photo"]
+                    item["photo"],
+                    buttons=make_post_buttons(storage_msg_id, filename, poster_variant)
                 )
 
                 if ok:
