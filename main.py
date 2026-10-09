@@ -975,33 +975,38 @@ async def handler(event):
         if unique_id in SENT_CACHE:
             return
 
-        # Always create our own branded poster from the app logo.
-        # Source-channel photos are intentionally ignored so unrelated
-        # images never get attached to the wrong APK.
+        # Try to find a matching app logo and create the branded poster.
+        # If no confident logo is found (or poster creation fails), continue
+        # with a text-only post instead of dropping the APK. Never guess a
+        # different app's logo or attach an unrelated source-channel image.
         info = parse_apk_name(filename)
+        photo = None
         online_logo = await fetch_online_app_logo(info["clean_name"])
 
         if online_logo is None:
             logger.warning(
-                "⏭️ APK skipped: real logo not found | app=%s | filename=%s",
+                "🖼️ No matching app logo found; will post APK without picture | app=%s | filename=%s",
                 info["clean_name"],
                 filename
             )
-            return
-
-        try:
-            photo = create_branded_poster(
-                info["clean_name"],
-                online_logo
-            )
-            STATS["logo_generated"] += 1
-            logger.info(
-                "🖼️ Dynamic branded poster created: %s",
-                info["clean_name"]
-            )
-        except Exception:
-            logger.exception("Dynamic poster creation failed")
-            return
+        else:
+            try:
+                photo = create_branded_poster(
+                    info["clean_name"],
+                    online_logo
+                )
+                STATS["logo_generated"] += 1
+                logger.info(
+                    "🖼️ Dynamic branded poster created: %s",
+                    info["clean_name"]
+                )
+            except Exception:
+                photo = None
+                logger.exception(
+                    "Poster creation failed; will post APK without picture | app=%s | filename=%s",
+                    info["clean_name"],
+                    filename
+                )
 
         # Do not republish source captions, external links, or join-channel promotions.
         clean_desc = ""
